@@ -1,0 +1,17 @@
+{
+  "name": "web-tool-default",
+  "filesystem": {
+    "deny": ["~/.ssh/**", "/etc/shadow", "~/.aws/**", "~/.gnupg/**"]
+  },
+  "network": {
+    "default": "deny",
+    "allow": [{ "cidr": "127.0.0.1/32", "ports": [11434, 8080] }]
+  },
+  "exec": {
+    "allow": ["/usr/bin/python3", "/usr/bin/cat"]
+  },
+  "rate_limits": {
+    "openat_per_sec": 50,
+    "connect_per_sec": 5
+  }
+}
