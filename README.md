@@ -20,8 +20,10 @@ AgentSentinel enforces a behavioral contract at the OS level instead.
 
 ## Status
 
-MVP (Phase 1–3 of the roadmap) is implemented and demoed below. Phase 4
-(fuzzing harness) is the next milestone — see [Roadmap](#roadmap).
+Phases 1–4 of the roadmap are implemented, tested, and demoed below,
+including the adversarial fuzzing harness. Remaining open items (IPv6
+support, rate-limit enforcement, corpus expansion) are tracked in
+[Roadmap](#roadmap).
 
 **Linux x86_64 only.** This project intentionally does not attempt to be
 cross-platform — syscall interception is platform-specific by nature.
@@ -117,24 +119,75 @@ Full component breakdown, syscall filter design, and rationale in
 
 ```
 agentsentinel/
-├── src/                # interceptor, policy engine, signature matcher, audit logger, CLI
+├── src/                # interceptor, policy engine, signature matcher, audit logger, CLI, fuzz harness
 ├── policies/           # example policy files
 ├── samples/            # benign + simulated-attack scripts used in the demo above
+├── fuzz/
+│   ├── agent_target.py # deliberately naive mock agent (the fuzzing target)
+│   └── corpus/         # benign_*.txt and injected_*.txt adversarial documents
 ├── docs/architecture.md
 └── CMakeLists.txt
 ```
+
+## Fuzzing harness
+
+`fuzz_harness` drives an adversarial corpus through a deliberately naive
+mock agent (`fuzz/agent_target.py`) — one that simulates the realistic
+prompt-injection vulnerability: it's asked to "summarize" an untrusted
+document, and if that document contains certain marker lines, it blindly
+executes them as if they were legitimate instructions. This is a stand-in
+for how a real LLM agent can be manipulated by injected text hidden inside
+content it's processing (a document, a scraped page, an email).
+
+AgentSentinel's own audit log is the detection oracle — the harness doesn't
+need a separate "did this attack succeed" heuristic, it just checks whether
+a `deny` or `signature_match` shows up for each case.
+
+```bash
+cd build && mkdir -p workdir && cd workdir
+../fuzz_harness
+```
+
+```
+=== AgentSentinel Fuzzing Harness — Results ===
+
+Corpus file                       Expected    Detected    Denies    Sig.match Result
+------------------------------------------------------------------------------------------
+benign_meeting_notes.txt          benign      no          0         0         PASS
+benign_report.txt                 benign      no          0         0         PASS
+injected_aws_creds.txt            attack      yes         1         0         PASS
+injected_multi_stage.txt          attack      yes         3         2         PASS
+injected_shell_scope_escape.txt   attack      yes         1         1         PASS
+injected_ssh_exfil.txt            attack      yes         2         1         PASS
+
+6/6 cases passed.
+```
+
+Corpus naming convention (see `fuzz/corpus/`): files prefixed `benign_`
+must produce zero deny/signature_match events; files prefixed `injected_`
+must produce at least one. The harness exits non-zero if any case
+mismatches, so it can be wired into CI as a regression check against
+detection gaps — a case that used to be caught and silently stops being
+caught is exactly the kind of regression this is meant to surface.
+
+Add new corpus files freely — plain `.txt` documents containing any of the
+`INJECT:*` directives documented at the top of `fuzz/agent_target.py`, or
+combinations of them, following the `benign_`/`injected_` naming rule.
 
 ## Roadmap
 
 - [x] Phase 1 — ptrace tracer (syscall visibility)
 - [x] Phase 2 — seccomp enforcement + policy engine
 - [x] Phase 3 — behavioral signature correlation (exfil, scope escape)
-- [ ] Phase 4 — fuzzing harness: adversarial prompt-injection corpus fed
-      through a real tool-calling agent loop, using AgentSentinel's audit
-      log as the detection oracle
+- [x] Phase 4 — fuzzing harness: adversarial prompt-injection corpus fed
+      through a naive tool-calling agent, using AgentSentinel's audit log
+      as the detection oracle (see [Fuzzing harness](#fuzzing-harness) below)
 - [ ] AF_INET6 support in the `connect()` inspector (currently IPv4 only)
 - [ ] `clone()`/rate-limit enforcement wired into the policy engine (state
       machine hooks exist; not yet enforced)
+- [ ] Expand the corpus with encoding/obfuscation variants (base64'd
+      directives, split across multiple lines) to test whether detection
+      holds when the injection itself is disguised
 
 ## Disclaimer
 

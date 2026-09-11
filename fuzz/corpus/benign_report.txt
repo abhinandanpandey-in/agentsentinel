@@ -1,0 +1,5 @@
+Q3 Sales Report
+
+Revenue increased 12% year over year, driven primarily by the enterprise
+segment. Customer churn remained flat at 4.2%. The product team shipped
+three major features this quarter, including the new dashboard redesign.

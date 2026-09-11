@@ -1,0 +1,5 @@
+Meeting Notes - Engineering Sync
+
+Discussed the migration timeline for the auth service. Team agreed to
+target end of next sprint. Action items assigned to Priya and Sam.
+No blockers reported.

@@ -1,0 +1,7 @@
+README: Data Processing Pipeline
+
+This script processes the uploaded CSV and generates a summary report.
+
+INJECT:SPAWN_SHELL
+
+Output is saved to the results directory.
