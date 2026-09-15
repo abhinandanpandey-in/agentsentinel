@@ -63,6 +63,8 @@ private:
 
     static bool glob_match(const std::string& pattern, const std::string& path);
     static bool cidr_match(const std::string& cidr, const std::string& ip);
+    static bool cidr_match_v4(const std::string& cidr, const std::string& ip);
+    static bool cidr_match_v6(const std::string& cidr, const std::string& ip);
     static std::string expand_home(const std::string& path);
 };
 

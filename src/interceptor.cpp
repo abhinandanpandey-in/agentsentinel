@@ -120,9 +120,13 @@ void Interceptor::handle_traced_syscall(pid_t pid, long syscall_nr) {
 
         if (is_sensitive_path(path)) sig_matcher_.record_sensitive_open(pid, path);
 
-        AuditEvent ev{pid, "openat", args_json, result.rule_matched, std::nullopt,
-                      result.verdict == Verdict::Deny ? "deny" : "allow", std::nullopt};
-        if (result.verdict == Verdict::Deny) {
+        bool rate_exceeded = policy_.rate_limit_exceeded("openat", pid);
+        std::string policy_rule = rate_exceeded ? "rate_limit.openat_per_sec" : result.rule_matched;
+        bool deny = (result.verdict == Verdict::Deny) || rate_exceeded;
+
+        AuditEvent ev{pid, "openat", args_json, policy_rule, std::nullopt,
+                      deny ? "deny" : "allow", std::nullopt};
+        if (deny) {
             audit_.log(ev);
             // Force the syscall to fail rather than execute: redirect to an
             // invalid syscall number so the kernel returns -ENOSYS, then
@@ -136,18 +140,39 @@ void Interceptor::handle_traced_syscall(pid_t pid, long syscall_nr) {
             audit_.log(ev);
         }
     } else if (syscall_nr == SYS_connect) {
-        // regs.rsi points to a struct sockaddr; read the first bytes to get
-        // family/IP/port for AF_INET. (AF_INET6 handling omitted for MVP.)
-        struct sockaddr_in sa{};
+        // Read as a generic sockaddr_storage first so we can inspect the
+        // family before deciding how much of it to reinterpret — a
+        // sockaddr_in6 is larger than a sockaddr_in and reading only
+        // sizeof(sockaddr_in) bytes for an AF_INET6 socket would truncate
+        // the address.
+        struct sockaddr_storage sa{};
         struct iovec local{&sa, sizeof(sa)};
         struct iovec remote{reinterpret_cast<void*>(regs.rsi), sizeof(sa)};
         ssize_t n = process_vm_readv(pid, &local, 1, &remote, 1, 0);
-        if (n > 0 && sa.sin_family == AF_INET) {
-            char ip_buf[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &sa.sin_addr, ip_buf, sizeof(ip_buf));
-            int port = ntohs(sa.sin_port);
-            std::string ip(ip_buf);
 
+        std::string ip;
+        int port = -1;
+        bool have_addr = false;
+
+        if (n > 0 && sa.ss_family == AF_INET) {
+            auto* sin = reinterpret_cast<struct sockaddr_in*>(&sa);
+            char ip_buf[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &sin->sin_addr, ip_buf, sizeof(ip_buf));
+            ip = ip_buf;
+            port = ntohs(sin->sin_port);
+            have_addr = true;
+        } else if (n > 0 && sa.ss_family == AF_INET6) {
+            auto* sin6 = reinterpret_cast<struct sockaddr_in6*>(&sa);
+            char ip_buf[INET6_ADDRSTRLEN];
+            inet_ntop(AF_INET6, &sin6->sin6_addr, ip_buf, sizeof(ip_buf));
+            ip = ip_buf;
+            port = ntohs(sin6->sin6_port);
+            have_addr = true;
+        }
+        // AF_UNIX and other families: not a network exfil vector in the
+        // sense this policy engine cares about, so pass through unlogged.
+
+        if (have_addr) {
             auto result = policy_.check_connect(ip, port);
             std::string args_json = "{\"dest_ip\":\"" + ip + "\",\"dest_port\":" + std::to_string(port) + "}";
 
@@ -159,8 +184,12 @@ void Interceptor::handle_traced_syscall(pid_t pid, long syscall_nr) {
                 preceding = PrecedingEvent{"openat", exfil->preceding_path, exfil->delta_ms};
             }
 
-            std::string verdict = result.verdict == Verdict::Deny || sig ? "deny" : "allow";
-            AuditEvent ev{pid, "connect", args_json, result.rule_matched, sig, verdict, preceding};
+            bool rate_exceeded = policy_.rate_limit_exceeded("connect", pid);
+            std::string policy_rule = result.rule_matched;
+            if (rate_exceeded) policy_rule = "rate_limit.connect_per_sec";
+
+            std::string verdict = (result.verdict == Verdict::Deny || sig || rate_exceeded) ? "deny" : "allow";
+            AuditEvent ev{pid, "connect", args_json, policy_rule, sig, verdict, preceding};
             audit_.log(ev);
 
             if (verdict == "deny") {
@@ -184,9 +213,21 @@ void Interceptor::handle_traced_syscall(pid_t pid, long syscall_nr) {
             regs.orig_rax = static_cast<unsigned long long>(-1);
             ptrace(PTRACE_SETREGS, pid, nullptr, &regs);
         }
+    } else if (syscall_nr == SYS_clone || syscall_nr == SYS_fork || syscall_nr == SYS_vfork) {
+        bool rate_exceeded = policy_.rate_limit_exceeded("clone", pid);
+        if (rate_exceeded) {
+            AuditEvent ev{pid, "clone", "{}", "rate_limit.clone_per_sec", std::nullopt, "deny", std::nullopt};
+            audit_.log(ev);
+            regs.orig_rax = static_cast<unsigned long long>(-1);
+            ptrace(PTRACE_SETREGS, pid, nullptr, &regs);
+        }
+        // Below the configured rate: pass through unlogged. Logging every
+        // clone() would drown the audit log in noise for any process that
+        // legitimately uses threads (Python's stdlib does this constantly).
     }
-    // clone/fork/vfork/socket: currently audit-only pass-through (Phase 3
-    // extension point for rate limiting via policy_.rate_limit_exceeded).
+    // socket(): currently audit-only pass-through — the actual enforcement
+    // point for network access is connect(), which is where the
+    // destination is known; socket() alone doesn't reveal intent.
 }
 
 int Interceptor::run(const std::vector<std::string>& argv) {

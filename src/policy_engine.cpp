@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <arpa/inet.h>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <algorithm>
 
@@ -45,6 +46,16 @@ bool PolicyEngine::glob_match(const std::string& pattern_in, const std::string& 
 }
 
 bool PolicyEngine::cidr_match(const std::string& cidr, const std::string& ip) {
+    // IPv6 addresses/CIDRs contain ':'; IPv4 ones don't. A rule and the
+    // address being checked must be the same family to ever match — an
+    // IPv4-only allow rule should never accidentally match an IPv6 dest.
+    bool cidr_is_v6 = cidr.find(':') != std::string::npos;
+    bool ip_is_v6 = ip.find(':') != std::string::npos;
+    if (cidr_is_v6 != ip_is_v6) return false;
+    return cidr_is_v6 ? cidr_match_v6(cidr, ip) : cidr_match_v4(cidr, ip);
+}
+
+bool PolicyEngine::cidr_match_v4(const std::string& cidr, const std::string& ip) {
     auto slash = cidr.find('/');
     std::string net_str = cidr.substr(0, slash);
     int prefix_len = slash == std::string::npos ? 32 : std::stoi(cidr.substr(slash + 1));
@@ -55,6 +66,30 @@ bool PolicyEngine::cidr_match(const std::string& cidr, const std::string& ip) {
 
     uint32_t mask = prefix_len == 0 ? 0 : htonl(~((1u << (32 - prefix_len)) - 1));
     return (net_addr.s_addr & mask) == (ip_addr.s_addr & mask);
+}
+
+bool PolicyEngine::cidr_match_v6(const std::string& cidr, const std::string& ip) {
+    auto slash = cidr.find('/');
+    std::string net_str = cidr.substr(0, slash);
+    int prefix_len = slash == std::string::npos ? 128 : std::stoi(cidr.substr(slash + 1));
+    if (prefix_len < 0 || prefix_len > 128) return false;
+
+    in6_addr net_addr{}, ip_addr{};
+    if (inet_pton(AF_INET6, net_str.c_str(), &net_addr) != 1) return false;
+    if (inet_pton(AF_INET6, ip.c_str(), &ip_addr) != 1) return false;
+
+    // Compare prefix_len bits, byte-by-byte with a final partial-byte mask
+    // rather than treating the address as a single integer (128 bits
+    // doesn't fit in any native integer type on most platforms).
+    int full_bytes = prefix_len / 8;
+    int rem_bits = prefix_len % 8;
+    if (std::memcmp(net_addr.s6_addr, ip_addr.s6_addr, full_bytes) != 0) return false;
+    if (rem_bits > 0) {
+        uint8_t mask = static_cast<uint8_t>(0xFF << (8 - rem_bits));
+        if ((net_addr.s6_addr[full_bytes] & mask) != (ip_addr.s6_addr[full_bytes] & mask))
+            return false;
+    }
+    return true;
 }
 
 PolicyEngine PolicyEngine::load_from_file(const std::string& path) {

@@ -196,8 +196,9 @@ working commits/tags at each stage rather than one big unreviewable dump.
     "allow": ["/usr/bin/python3"]
   },
   "rate_limits": {
-    "openat_per_sec": 50,
-    "connect_per_sec": 5
+    "openat_per_sec": 300,
+    "connect_per_sec": 5,
+    "clone_per_sec": 20
   }
 }
 ```

@@ -32,6 +32,13 @@ target_compile_options(agentsentinel PRIVATE ${SECCOMP_CFLAGS_OTHER})
 add_executable(fuzz_harness src/fuzz_harness.cpp)
 target_link_libraries(fuzz_harness PRIVATE nlohmann_json::nlohmann_json)
 
+# Unit test for IPv6 CIDR matching — exercises PolicyEngine directly since
+# this environment's IPv6 sockets can't be relied on for a live end-to-end
+# syscall test (see tests/test_ipv6_cidr.cpp for why).
+add_executable(test_ipv6_cidr tests/test_ipv6_cidr.cpp src/policy_engine.cpp)
+target_include_directories(test_ipv6_cidr PRIVATE src)
+target_link_libraries(test_ipv6_cidr PRIVATE nlohmann_json::nlohmann_json)
+
 # This project depends on Linux-specific interfaces (ptrace, seccomp-bpf,
 # process_vm_readv) and is not intended to be portable.
 if(NOT UNIX OR APPLE)
