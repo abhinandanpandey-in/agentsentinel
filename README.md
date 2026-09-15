@@ -73,7 +73,7 @@ followed by a blocked outbound connection, automatically correlated):
  "detail":"/root/.ssh/id_rsa","delta_ms":0}}
 ```
 
-**3. Scope escape — a "read-only" tool spawning a shell — blocked:**
+**3. Scope escape — a "read-only" tool spawning a shell  blocked:**
 
 ```bash
 ../agentsentinel run --policy ../../policies/web-tool-default.json \
